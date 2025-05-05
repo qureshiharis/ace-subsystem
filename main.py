@@ -106,7 +106,13 @@ def main():
                 logger.warning("Anomaly detected — triggering alert")
                 alert()
 
-             # Publish only the last row
+            # Check if df_combined is empty before publishing and writing
+            if df_combined.empty:
+                logger.warning("df_combined is empty — skipping MQTT publish and file write")
+                time.sleep(FETCH_INTERVAL)
+                continue
+
+            # Publish only the last row
             last_row = df_combined.iloc[[-1]]
             publish_anomaly_row(last_row)
 
