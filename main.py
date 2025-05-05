@@ -69,7 +69,11 @@ def main():
                 df_sp.rename(columns={"Value": f"SetPoint_{sp_tag}"}, inplace=True)
                 df_pv.rename(columns={"Value": f"Actual_{pv_tag}"}, inplace=True)
 
-                df = pd.merge(df_sp, df_pv, on="Timestamp", how="inner")
+                df_sp.sort_values("Timestamp", inplace=True)
+                df_pv.sort_values("Timestamp", inplace=True)
+                df = pd.merge_asof(
+                    df_sp, df_pv, on="Timestamp", direction="nearest", tolerance=pd.Timedelta("1min")
+                )
                 logger.info(f"Merged {sp_tag} & {pv_tag} → {df.shape} rows")
                 data_frames.append(df)
             else:
@@ -97,7 +101,11 @@ def main():
             except FileNotFoundError:
                 logger.info("First time creating output file.")
 
+            logger.info(f"df_combined shape before buffer filter: {df_combined.shape}")
+            logger.info(f"Timestamps range: {df_combined['Timestamp'].min()} → {df_combined['Timestamp'].max()}")
+            logger.info(f"cutoff_time: {cutoff_time}")
             df_combined = df_combined[df_combined["Timestamp"] >= cutoff_time]
+            logger.info(f"df_combined shape after buffer filter: {df_combined.shape}")
             df_combined.sort_values("Timestamp", inplace=True)
 
             logger.debug(f"anomalies_detected: {anomaly_flags}")
