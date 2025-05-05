@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 from config import TAG_PAIRS, FETCH_INTERVAL, API_KEY
 from fetcher import fetch_sensor_data
-from detector import detect_anomalies
+from detector import detect_anomalies_for_pair
 from notifier import alert
 
 
@@ -41,31 +41,34 @@ def publish_anomaly_row(row):
     payload = row.to_json()
     if mqtt_connected:
         mqtt_client.publish(MQTT_TOPIC, payload)
+        logger.info(f"Published topic: {MQTT_TOPIC}")
+        logger.info(f"Published payload: {payload}")
     else:
         logger.info("Skipping MQTT publish since client is not connected.")
 
-OUTPUT_FILE = os.getenv("OUTPUT_FILE", "latest_data.csv")
 BUFFER_HOURS = int(os.getenv("BUFFER_HOURS", 4))
+OUTPUT_FILE = os.getenv("OUTPUT_FILE", "sensor")
 
 
 def main():
     while True:
         logger.info("Fetching and processing data...")
 
-        data_frames = []
+        cutoff_time = pd.Timestamp.now(tz="Europe/Stockholm") - timedelta(hours=BUFFER_HOURS)
+
         for sp_tag, pv_tag in TAG_PAIRS:
             df_sp = fetch_sensor_data(sp_tag, API_KEY, window_minutes=BUFFER_HOURS * 60)
             df_pv = fetch_sensor_data(pv_tag, API_KEY, window_minutes=BUFFER_HOURS * 60)
 
             if df_sp is not None and df_pv is not None:
                 logger.info(f"{sp_tag} -> {df_sp.shape} rows | {pv_tag} -> {df_pv.shape} rows")
-                # continue with merge logic
+              
             else:
                 logger.warning(f"Skipping pair ({sp_tag}, {pv_tag}) due to failed fetch (None returned)")
                 continue
 
             if df_sp is not None and df_pv is not None and not df_sp.empty and not df_pv.empty:
-                # 🔧 Rename BEFORE merging
+                # Rename BEFORE merging
                 df_sp.rename(columns={"Value": f"SetPoint_{sp_tag}"}, inplace=True)
                 df_pv.rename(columns={"Value": f"Actual_{pv_tag}"}, inplace=True)
 
@@ -75,60 +78,34 @@ def main():
                     df_sp, df_pv, on="Timestamp", direction="nearest", tolerance=pd.Timedelta("1min")
                 )
                 logger.info(f"Merged {sp_tag} & {pv_tag} → {df.shape} rows")
-                data_frames.append(df)
+
+                df = df.sort_values("Timestamp").interpolate().bfill().ffill()
+
+                df, anomaly_flags = detect_anomalies_for_pair(df, sp_tag, pv_tag)
+
+                output_file = f"{OUTPUT_FILE}_latest_{sp_tag}.csv"
+                try:
+                    df_existing = pd.read_csv(output_file, parse_dates=["Timestamp"]).sort_values("Timestamp")
+                    if not df.empty:
+                        df_existing = pd.concat([df_existing.iloc[1:], df.iloc[[-1]]], ignore_index=True)
+                except FileNotFoundError:
+                    logger.info(f"First time creating output file for {output_file}.")
+                    df_existing = df.copy()
+
+                df_existing.drop_duplicates(subset=["Timestamp"], keep="last", inplace=True)
+                df_existing = df_existing[df_existing["Timestamp"] >= cutoff_time]
+                df_existing.sort_values("Timestamp", inplace=True)
+                df_existing.to_csv(output_file, index=False)
+                logger.info(f"Data saved to {output_file} with {len(df_existing)} rows")
+
+                if not df_existing.empty:
+                    publish_anomaly_row(df_existing.iloc[[-1]])
+
+                if anomaly_flags:
+                    logger.warning(f"Anomaly detected for {sp_tag} — triggering alert")
+                    alert()
             else:
                 logger.warning(f"Skipping {sp_tag} & {pv_tag} due to empty data.")
-
-        if data_frames:
-            df_combined = data_frames[0]
-            for df in data_frames[1:]:
-                df_combined = pd.merge(df_combined, df, on="Timestamp", how="inner")
-
-            logger.info(f"Total merged shape before preprocessing: {df_combined.shape}")
-            df_combined = df_combined.sort_values("Timestamp").interpolate().bfill().ffill()
-
-            # Detect anomalies
-            df_combined, anomaly_flags = detect_anomalies(df_combined)
-
-            # Rolling buffer - keep only last BUFFER_HOURS of data
-            cutoff_time = pd.Timestamp.now(tz="Europe/Stockholm") - timedelta(hours=BUFFER_HOURS)
-
-            try:
-                df_existing = pd.read_csv(OUTPUT_FILE, parse_dates=["Timestamp"])
-                df_existing = df_existing[df_existing["Timestamp"] >= cutoff_time]
-                df_combined = pd.concat([df_existing, df_combined], ignore_index=True)
-                df_combined.drop_duplicates(subset=["Timestamp"], keep="last", inplace=True)
-            except FileNotFoundError:
-                logger.info("First time creating output file.")
-
-            logger.info(f"df_combined shape before buffer filter: {df_combined.shape}")
-            logger.info(f"Timestamps range: {df_combined['Timestamp'].min()} → {df_combined['Timestamp'].max()}")
-            logger.info(f"cutoff_time: {cutoff_time}")
-            df_combined = df_combined[df_combined["Timestamp"] >= cutoff_time]
-            logger.info(f"df_combined shape after buffer filter: {df_combined.shape}")
-            df_combined.sort_values("Timestamp", inplace=True)
-
-            logger.debug(f"anomalies_detected: {anomaly_flags}")
-            # Trigger alerts
-            if any(anomaly_flags.values()):
-                logger.warning("Anomaly detected — triggering alert")
-                alert()
-
-            # Check if df_combined is empty before publishing and writing
-            if df_combined.empty:
-                logger.warning("df_combined is empty — skipping MQTT publish and file write")
-                time.sleep(FETCH_INTERVAL)
-                continue
-
-            # Publish only the last row
-            last_row = df_combined.iloc[[-1]]
-            publish_anomaly_row(last_row)
-
-            df_combined.to_csv(OUTPUT_FILE, index=False)
-            logger.info(f"Data saved to {OUTPUT_FILE} with {len(df_combined)} rows")
-
-        else:
-            logger.warning("No valid dataframes to combine — skipping write")
 
         time.sleep(FETCH_INTERVAL)
 

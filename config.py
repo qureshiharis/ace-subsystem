@@ -1,5 +1,10 @@
 import os
 
+# TO BE REMOVED
+from dotenv import load_dotenv
+load_dotenv()
+# TO BE REMOVED
+
 def parse_tag_pairs(env_str):
     print(f"[DEBUG] TAG_PAIRS: {env_str!r}")
     pairs = []
