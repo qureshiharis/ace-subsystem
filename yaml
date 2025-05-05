@@ -1,0 +1,37 @@
+name: [ventilation OR heating]
+version: "1.0"
+services:
+  - name: [ventilation OR heating]-subsystem
+    mode: replicated
+    replicas: 1
+    placement:
+      match-host-labels: function = [ventilation or heating]
+    share-pid-namespace: false
+    containers:
+      - name: [ventilation or heating]-container
+        mounts: []
+        container-log-size: 100 MB
+        container-log-archive: false
+        shutdown-timeout: 10s
+        image: index.docker.io/topnot/ace-subsystem:v1.0
+        env:
+          USE_GPIO: "false"
+          TAG_PAIRS: 
+          OUTPUT_FILE: [ventilation OR heating]_latest_data.csv
+          MQTT_TOPIC: anomalies/[ventilation OR heating]
+          MQTT_PORT: 
+          MQTT_BROKER: 
+          LED_PIN: "18"
+          FIXED_OFFSET: +02:00
+          FETCH_INTERVAL: "300"
+          BUZZER_PIN: "23"
+          BUFFER_HOURS: "4"
+          BASE_URL: 
+          API_KEY: 
+          ANOMALY_STD_MULTIPLIER: "3"
+        on-mounted-file-change:
+          restart: true
+    network:
+      outbound-access:
+        allow-all: true
+on-mutable-variable-change: restart-service-instance
