@@ -27,14 +27,22 @@ MQTT_TOPIC = os.getenv("MQTT_TOPIC", "anomalies")
 
 # Set up MQTT client
 mqtt_client = mqtt.Client()
+mqtt_connected = False
 logger.info(f"MQTT_BROKER, MQTT_PORT: {MQTT_BROKER} {MQTT_PORT}")
-mqtt_client.connect(MQTT_BROKER, MQTT_PORT)
-mqtt_client.loop_start()
+try:
+    mqtt_client.connect(MQTT_BROKER, MQTT_PORT)
+    mqtt_client.loop_start()
+    mqtt_connected = True
+except Exception as e:
+    logger.warning(f"MQTT connection failed: {e}")
 
 def publish_anomaly_row(row):
     import json
     payload = row.to_json()
-    mqtt_client.publish(MQTT_TOPIC, payload)
+    if mqtt_connected:
+        mqtt_client.publish(MQTT_TOPIC, payload)
+    else:
+        logger.info("Skipping MQTT publish since client is not connected.")
 
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", "latest_data.csv")
 BUFFER_HOURS = int(os.getenv("BUFFER_HOURS", 4))
