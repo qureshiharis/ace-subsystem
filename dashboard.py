@@ -21,12 +21,14 @@ def process_payload(payload):
     processed = {}
     for key, value in payload.items():
         if isinstance(value, dict):
-            # Attempt to extract the first (and only) value in the inner dict
-            try:
-                inner_value = next(iter(value.values()))
+            # Handle nested dicts; if multiple keys, flatten with composite keys
+            if len(value) == 1:
+                inner_value = list(value.values())[0]
                 processed[key] = inner_value
-            except Exception:
-                processed[key] = value
+            else:
+                # Flatten keys with inner dict keys appended
+                for inner_key, inner_val in value.items():
+                    processed[f"{key}_{inner_key}"] = inner_val
         else:
             processed[key] = value
     return processed
@@ -89,7 +91,9 @@ if "mqtt_client" not in st.session_state:
             print(f"[MQTT] Received message on {msg.topic}: {payload}")
             processed_payload = process_payload(payload)
             print(f"[MQTT] Processed payload: {processed_payload}")
-            message_queue.append((msg.topic, processed_payload))
+            # Ensure thread-safe access to the shared message queue
+            with data_lock:
+                message_queue.append((msg.topic, processed_payload))
         except Exception as e:
             print(f"Failed to decode or process message: {e}")
             return
@@ -134,7 +138,8 @@ with data_lock:
         topic, data = message_queue.pop(0)
         subsystem_msg = "heating" if topic.endswith("/heating") else "ventilation"
         timestamp_raw = data.get("Timestamp", "")
-        timestamp = str(timestamp_raw) if timestamp_raw else pd.Timestamp.now().isoformat()
+        # Ensure timestamp is numeric (milliseconds since epoch)
+        timestamp = int(timestamp_raw) if isinstance(timestamp_raw, (int, float, str)) and str(timestamp_raw).isdigit() else int(pd.Timestamp.now().timestamp() * 1000)
         try:
             time_only = pd.to_datetime(timestamp).strftime("%H:%M:%S")
         except Exception:
@@ -166,7 +171,15 @@ with data_lock:
                         elif prefix == "Error":
                             sensor_entry["Error"] = float(value) if value is not None else None
                         elif prefix == "Anomaly":
-                            sensor_entry["Anomaly"] = bool(value) if isinstance(value, bool) else str(value).lower() == "true"
+                            # Normalize anomaly value to strict boolean from various possible representations
+                            if isinstance(value, bool):
+                                sensor_entry["Anomaly"] = value
+                            elif isinstance(value, (int, float)):
+                                sensor_entry["Anomaly"] = bool(value)
+                            elif isinstance(value, str):
+                                sensor_entry["Anomaly"] = value.strip().lower() in ["true", "1", "yes"]
+                            else:
+                                sensor_entry["Anomaly"] = False
         print(f"[PARSE] Sensor entries parsed: {sensor_data_map}")
 
         new_entries = list(sensor_data_map.values())
@@ -177,15 +190,22 @@ with data_lock:
         csv_path = f"{subsystem_msg}.csv"
         file_exists = os.path.isfile(csv_path)
 
+        # Limit the number of entries in session state to prevent memory bloat
+        # Buffer writes to reduce file I/O overhead
+        buffer_df = pd.DataFrame(new_entries)
+        try:
+            buffer_df.to_csv(csv_path, mode='a', header=not file_exists, index=False)
+        except Exception as e:
+            print(f"Error writing buffered entries to {csv_path}: {e}")
+        file_exists = True  # header written only once
         for entry in new_entries:
             print(f"[WRITE] Writing entry to {csv_path}: {entry}")
             target_data.append(entry)
+            # Keep only the latest 1000 entries to limit memory usage
+            if len(target_data) > 1000:
+                del target_data[0:len(target_data) - 1000]
             print(f"[SESSION] Appended entry to {subsystem_msg}_data: {entry}")
-            try:
-                pd.DataFrame([entry]).to_csv(csv_path, mode='a', header=not file_exists, index=False)
-                file_exists = True  # header written only once
-            except Exception as e:
-                print(f"Error writing entry to {csv_path}: {e}")
+        break
 
 # Safely copy current data under lock for the selected subsystem
 with data_lock:
