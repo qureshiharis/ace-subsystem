@@ -1,145 +1,221 @@
-import streamlit as st
-import pandas as pd
-import altair as alt
 import os
-import glob
-from datetime import datetime
-import paho.mqtt.client as mqtt
 import json
 import threading
-import time
+import pandas as pd
+import altair as alt
+import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+import paho.mqtt.client as mqtt
 
-st.set_page_config(layout="wide")
-st.title("IoT Anomaly Monitoring Dashboard")
-st_autorefresh(interval=10 * 1000, key="data_refresh")
+def process_payload(payload):
+    """
+    Processes the MQTT payload and returns a cleaned dictionary with flat key-value pairs.
+    Supports payloads where values are nested dictionaries with numeric string keys.
+    Example output:
+    {
+        'Timestamp': 1746542991230,
+        'SetPoint_1473_04_AS01_VS01_GT101_CSP': 36.2,
+        ...
+    }
+    """
+    processed = {}
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            # Attempt to extract the first (and only) value in the inner dict
+            try:
+                inner_value = next(iter(value.values()))
+                processed[key] = inner_value
+            except Exception:
+                processed[key] = value
+        else:
+            processed[key] = value
+    return processed
 
-# Detect available subsystems dynamically based on CSV filenames
-csv_files = glob.glob("*latest_*.csv")
-subsystems = set(os.path.basename(f).split("_latest_")[0] for f in csv_files)
+# Global thread lock (use this instead of session_state for thread safety)
+data_lock = threading.Lock()
 
-if not subsystems:
-    st.warning("No data files found. Waiting for data...")
-    st.stop()
+# Configurable MQTT broker settings
+MQTT_BROKER = "localhost"        # e.g., "test.mosquitto.org" or your broker address
+MQTT_PORT = 1883
+MQTT_KEEPALIVE = 60
 
-selected_subsystem = st.sidebar.selectbox("Select Subsystem", sorted(subsystems, key=str.lower), format_func=lambda x: x.capitalize())
+# Set Streamlit page layout and title
+st.set_page_config(page_title="Anomaly Dashboard", layout="wide")
 
-# Filter files for selected subsystem
-subsystem_files = [f for f in csv_files if f.startswith(f"{selected_subsystem}_latest_")]
-st.markdown(f"### Subsystem: `{selected_subsystem.capitalize()}`")
+# Initialize session state for MQTT and data (run only on first load)
+if "mqtt_client" not in st.session_state:
+    # Load existing CSV data if available (to avoid duplicating historical data)
+    for subsystem in ["heating", "ventilation"]:
+        csv_file = f"{subsystem}.csv"
+        if os.path.exists(csv_file):
+            try:
+                df_old = pd.read_csv(csv_file)
+                # Ensure expected columns exist and convert to list of dict entries
+                if not df_old.empty:
+                    # Sort by Timestamp to get the latest entry
+                    df_old = df_old.sort_values("Timestamp")
+                    # Extend the in-memory list with existing data
+                    if subsystem == "heating":
+                        st.session_state.setdefault("heating_data", []).extend(df_old.to_dict(orient="records"))
+                    else:
+                        st.session_state.setdefault("ventilation_data", []).extend(df_old.to_dict(orient="records"))
+            except Exception as e:
+                st.warning(f"Warning: Could not load {csv_file} ({e}). Starting fresh.")
+                # If file is corrupted or unreadable, start with empty data
 
-live_data = {}
+    # Message queue to hold incoming processed messages
+    message_queue = []
 
-def parse_mqtt_payload(payload):
+    # Define MQTT callbacks
+    def on_connect(client, userdata, flags, rc):
+        if rc == 0:
+            print("Connected to MQTT broker.")
+            # Subscribe to both topics upon connecting
+            client.subscribe([("anomalies/heating", 0), ("anomalies/ventilation", 0)])
+        else:
+            print(f"Failed to connect, return code {rc}")
+
+    def on_message(client, userdata, msg):
+        """Handle incoming MQTT messages for anomalies."""
+        try:
+            payload = json.loads(msg.payload.decode())
+            processed_payload = process_payload(payload)
+            message_queue.append((msg.topic, processed_payload))
+        except Exception as e:
+            print(f"Failed to decode or process message: {e}")
+            return
+
+    # Set up MQTT client and start background thread loop
+    client = mqtt.Client(client_id="streamlit-dashboard")
+    client.on_connect = on_connect
+    client.on_message = on_message
     try:
-        data = json.loads(payload)
-        index = next(iter(data["Timestamp"]))
-        timestamp = pd.to_datetime(data["Timestamp"][index], unit="ms")
-
-        parsed_rows = []
-        for key in data:
-            if key == "Timestamp":
-                continue
-            sensor_prefix = "_".join(key.split("_")[1:-1])
-            if sensor_prefix not in live_data:
-                live_data[sensor_prefix] = []
-
-            row = {
-                "Timestamp": timestamp,
-                "TimeOnly": timestamp.strftime("%H:%M:%S"),
-            }
-
-            for suffix in ["SetPoint", "Actual", "Error", "Anomaly"]:
-                column = f"{suffix}_{sensor_prefix}_CSP"
-                if column in data:
-                    row[suffix] = data[column][index]
-
-            live_data[sensor_prefix].append(row)
-            parsed_rows.append((sensor_prefix, row))
-
-        return parsed_rows
+        client.connect(MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE)
     except Exception as e:
-        print(f"Failed to parse MQTT payload: {e}")
-        return []
+        print(f"MQTT connection failed: {e}")
+    # Start the network loop in a separate thread so it won't block the Streamlit app
+    client.loop_start()
 
-# Display charts for each sensor in the selected subsystem
-for file in sorted(subsystem_files):
+    st.session_state["mqtt_client"] = client
+    st.session_state["message_queue"] = message_queue
+    st.session_state.setdefault("heating_data", [])
+    st.session_state.setdefault("ventilation_data", [])
+
+# Sidebar for subsystem selection
+subsystem = st.sidebar.selectbox("Select Subsystem", ["heating", "ventilation"], format_func=str.title)
+
+# Trigger automatic rerun every few seconds to fetch new data (avoids manual refresh or infinite loops)
+st_autorefresh(interval=2000, key="auto_refresh")  # refresh every 2 seconds
+
+# Process messages from the queue and update data accordingly
+with data_lock:
+    message_queue = st.session_state.get("message_queue", [])
+    while message_queue:
+        topic, data = message_queue.pop(0)
+        subsystem_msg = "heating" if topic.endswith("/heating") else "ventilation"
+        timestamp_raw = data.get("Timestamp", "")
+        timestamp = str(timestamp_raw) if timestamp_raw else pd.Timestamp.now().isoformat()
+        try:
+            time_only = pd.to_datetime(timestamp).strftime("%H:%M:%S")
+        except Exception:
+            time_only = timestamp  # fallback to raw if parsing fails
+
+        # Group sensor readings by sensor_id
+        sensor_data_map = {}
+        for key, value in data.items():
+            if "_" in key:
+                parts = key.split("_")
+                if len(parts) >= 3:
+                    prefix = parts[0]
+                    suffix = parts[-1]
+                    sensor_id = "_".join(parts[1:-1])
+                    if prefix in ["SetPoint", "Actual", "Error", "Anomaly"]:
+                        sensor_entry = sensor_data_map.setdefault(sensor_id, {
+                            "Timestamp": timestamp,
+                            "TimeOnly": time_only,
+                            "Sensor": sensor_id,
+                            "SetPoint": None,
+                            "Actual": None,
+                            "Error": None,
+                            "Anomaly": None
+                        })
+                        if prefix == "SetPoint":
+                            sensor_entry["SetPoint"] = float(value) if value is not None else None
+                        elif prefix == "Actual":
+                            sensor_entry["Actual"] = float(value) if value is not None else None
+                        elif prefix == "Error":
+                            sensor_entry["Error"] = float(value) if value is not None else None
+                        elif prefix == "Anomaly":
+                            sensor_entry["Anomaly"] = bool(value) if isinstance(value, bool) else str(value).lower() == "true"
+
+        new_entries = list(sensor_data_map.values())
+        if not new_entries:
+            continue  # no sensor data parsed
+
+        # Removed timestamp duplication check to allow all messages through
+        target_data = st.session_state["heating_data"] if subsystem_msg == "heating" else st.session_state["ventilation_data"]
+        target_data.extend(new_entries)
+        csv_path = f"{subsystem_msg}.csv"
+        file_exists = os.path.isfile(csv_path)
+        try:
+            new_df = pd.DataFrame(new_entries)
+            new_df.to_csv(csv_path, mode='a', header=not file_exists, index=False)
+        except Exception as e:
+            print(f"Error writing to {csv_path}: {e}")
+
+# Safely copy current data under lock for the selected subsystem
+with data_lock:
+    data_list = list(st.session_state["heating_data"] if subsystem == "heating" else st.session_state["ventilation_data"])
+
+# If no data is available yet, inform the user
+if not data_list:
+    st.write(f"Waiting for data on **{subsystem}** subsystem...")
+else:
+    # Create dataframe from the data list
+    df = pd.DataFrame(data_list)
+    # Ensure Timestamp is datetime for proper plotting
     try:
-        df = pd.read_csv(file, parse_dates=["Timestamp"])
-    except Exception as e:
-        st.error(f"Failed to read {file}: {e}")
-        continue
+        df["Timestamp"] = pd.to_datetime(pd.to_numeric(df["Timestamp"], errors="coerce"), unit="ms")
+    except Exception:
+        # If parsing fails (non-standard format), keep as string
+        pass
+    # Sort by time in case entries are out of order
+    df = df.sort_values("Timestamp")
+    # Identify unique sensor IDs in the data
+    sensors = sorted(df["Sensor"].unique())
 
-    sensor_id = os.path.basename(file).split("_latest_")[1].replace(".csv", "").removesuffix("_CSP")
-    sensor_prefix = sensor_id
-
-    sp_col = next((col for col in df.columns if col.startswith("SetPoint_")), None)
-    pv_col = next((col for col in df.columns if col.startswith("Actual_")), None)
-    anom_col = next((col for col in df.columns if col.startswith("Anomaly_")), None)
-
-    if not all([sp_col, pv_col, anom_col]):
-        st.warning(f"Missing required columns in {file}")
-        continue
-
-    chart_df = df[["Timestamp", sp_col, pv_col, anom_col]].rename(
-        columns={sp_col: "SetPoint", pv_col: "Actual", anom_col: "Anomaly"}
-    )
-
-    chart_df["TimeOnly"] = chart_df["Timestamp"].dt.strftime("%H:%M:%S")
-
-    if sensor_prefix in live_data:
-        live_df = pd.DataFrame(live_data[sensor_prefix])
-        chart_df = pd.concat([chart_df, live_df], ignore_index=True).drop_duplicates(subset=["Timestamp"]).sort_values("Timestamp")
-
-    min_val = chart_df[["Actual", "SetPoint"]].min().min()
-    max_val = chart_df[["Actual", "SetPoint"]].max().max()
-    y_min = min_val - 2
-    y_max = max_val + 2
-
-    base = alt.Chart(chart_df).encode(x="Timestamp:T")
-    points_actual = base.mark_circle(size=60, color="blue").encode(y="Actual:Q", tooltip=["TimeOnly", "Actual"])
-    points_setpoint = base.mark_circle(size=60, color="green").encode(y="SetPoint:Q", tooltip=["TimeOnly", "SetPoint"])
-
-    lines = base.mark_line().encode(
-        y=alt.Y("Actual:Q", title="Sensor Value", scale=alt.Scale(domain=[y_min, y_max])),
-        color=alt.value("blue"),
-        tooltip=["TimeOnly", "Actual"]
-    ) + base.mark_line(strokeDash=[4, 4]).encode(
-        y=alt.Y("SetPoint:Q", scale=alt.Scale(domain=[y_min, y_max])),
-        color=alt.value("green"),
-        tooltip=["TimeOnly", "SetPoint"]
-    )
-
-    anomalies = base.transform_filter("datum.Anomaly == true").mark_point(size=80).encode(
-        y="Actual",
-        color=alt.value("red"),
-        tooltip=["TimeOnly", "Actual"]
-    )
-
-    st.markdown(f"### Sensor: `{sensor_id}`")
-    st.altair_chart(lines + anomalies + points_actual + points_setpoint, use_container_width=True)
-    st.dataframe(chart_df.tail(5), use_container_width=True)
-
-def on_connect(client, userdata, flags, rc):
-    print("Connected to MQTT broker with result code " + str(rc))
-    client.subscribe("anomalies/#")
-
-def on_message(client, userdata, msg):
-    topic = msg.topic.split("/")[-1]
-    print(f"MQTT message received on topic {msg.topic}")
-    new_rows = parse_mqtt_payload(msg.payload.decode())
-    for sensor_prefix, row in new_rows:
-        print(f"Received data for {sensor_prefix}: {row}")
-
-mqtt_client = mqtt.Client()
-mqtt_client.on_connect = on_connect
-mqtt_client.on_message = on_message
-mqtt_client.connect("localhost", 1883, 60)
-
-def mqtt_thread():
-    mqtt_client.loop_forever()
-
-threading.Thread(target=mqtt_thread, daemon=True).start()
-
-st.markdown("---")
-st.caption("Dashboard auto-refreshes with MQTT every 5 minutes via separate push")
+    # Set up two columns for two sensor charts
+    col1, col2 = st.columns(2)
+    for idx, sensor_id in enumerate(sensors):
+        sensor_df = df[df["Sensor"] == sensor_id]
+        # Build Altair chart for this sensor
+        base = alt.Chart(sensor_df).encode(
+            x=alt.X("Timestamp:T", title="Time")
+        )
+        # Line for Actual (process value)
+        actual_line = base.mark_line(strokeDash=[5, 5], color="steelblue").encode(
+            y=alt.Y("Actual:Q", title="Value"),
+            tooltip=["Timestamp:T", "Actual:Q", "Error:Q", "Anomaly:O"]
+        )
+        # Line for SetPoint
+        setpoint_line = base.mark_line(color="green").encode(
+            y="SetPoint:Q",
+            tooltip=["Timestamp:T", "SetPoint:Q"]
+        )
+        # Red points for anomalies (where Anomaly is True)
+        anomaly_points = base.transform_filter(
+            alt.datum.Anomaly == True
+        ).mark_point(color="red", size=75).encode(
+            y="Actual:Q",
+            tooltip=["Timestamp:T", "Actual:Q", "Error:Q"]
+        )
+        chart = (actual_line + setpoint_line + anomaly_points).interactive()
+        # Display chart with a title for the sensor
+        if idx == 0:
+            with col1:
+                st.markdown(f"**Sensor {sensor_id}**")
+                st.altair_chart(chart, use_container_width=True)
+        elif idx == 1:
+            with col2:
+                st.markdown(f"**Sensor {sensor_id}**")
+                st.altair_chart(chart, use_container_width=True)
