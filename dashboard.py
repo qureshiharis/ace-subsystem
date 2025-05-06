@@ -8,9 +8,11 @@ import paho.mqtt.client as mqtt
 import json
 import threading
 import time
+from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(layout="wide")
 st.title("IoT Anomaly Monitoring Dashboard")
+st_autorefresh(interval=10 * 1000, key="data_refresh")
 
 # Detect available subsystems dynamically based on CSV filenames
 csv_files = glob.glob("*latest_*.csv")
