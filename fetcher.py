@@ -2,11 +2,10 @@ import requests
 import urllib.parse
 import pandas as pd
 from datetime import datetime, timedelta
-import logging
 import pytz  # for timezone awareness
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
+from logger_config import setup_logger
+logger = setup_logger(__name__)
 
 BASE_URL = 'https://webport.it.pitea.se/api'
 

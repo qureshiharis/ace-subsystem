@@ -13,22 +13,8 @@ from notifier import alert
 
 import paho.mqtt.client as mqtt
 
-import logging
-
-class StockholmFormatter(logging.Formatter):
-    def formatTime(self, record, datefmt=None):
-        stockholm = pytz.timezone("Europe/Stockholm")
-        dt = datetime.fromtimestamp(record.created, tz=timezone.utc).astimezone(stockholm)
-        return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
-
-handler = logging.StreamHandler()
-formatter = StockholmFormatter(fmt="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-handler.setFormatter(formatter)
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-logger.addHandler(handler)
-logger.propagate = False
+from logger_config import setup_logger
+logger = setup_logger(__name__)
 
 # MQTT config
 MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.1.219")  # Replace with local IP running the dashboard
