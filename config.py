@@ -25,7 +25,7 @@ def parse_tag_pairs(env_str):
 # Load environment variables
 TAG_PAIRS = parse_tag_pairs(os.getenv("TAG_PAIRS", ""))
 
-BASE_URL = os.getenv("BASE_URL", "")
+BASE_URL = os.getenv("BASE_URL", "https://webport.it.pitea.se/api")
 API_KEY = os.getenv("API_KEY", "")
 FIXED_OFFSET = os.getenv("FIXED_OFFSET", "+02:00")
 

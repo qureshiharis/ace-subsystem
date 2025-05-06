@@ -46,7 +46,7 @@ def publish_anomaly_row(row):
     else:
         logger.info("Skipping MQTT publish since client is not connected.")
 
-BUFFER_HOURS = int(os.getenv("BUFFER_HOURS", 1))
+BUFFER_HOURS = int(os.getenv("BUFFER_HOURS", 4))
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", "sensor")
 
 
@@ -87,15 +87,17 @@ def main():
                 try:
                     df_existing = pd.read_csv(output_file, parse_dates=["Timestamp"]).sort_values("Timestamp")
                     if not df.empty:
-                        df_existing = pd.concat([df_existing.iloc[1:], df.iloc[[-1]]], ignore_index=True)
+                        df_existing = pd.concat([df_existing, df], ignore_index=True)
                 except FileNotFoundError:
                     logger.info(f"First time creating output file for {output_file}.")
                     df_existing = df.copy()
 
                 df_existing.drop_duplicates(subset=["Timestamp"], keep="last", inplace=True)
                 df_existing = df_existing[df_existing["Timestamp"] >= cutoff_time]
+                logger.info(f"Filtered to {len(df_existing)} rows after applying {BUFFER_HOURS}h window and deduplication")
                 df_existing.sort_values("Timestamp", inplace=True)
                 df_existing.to_csv(output_file, index=False)
+                logger.info(f"Saving filtered data from {df_existing['Timestamp'].min()} to {df_existing['Timestamp'].max()}")
                 logger.info(f"Data saved to {output_file} with {len(df_existing)} rows")
 
                 if not df_existing.empty:
