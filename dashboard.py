@@ -4,6 +4,10 @@ import altair as alt
 import os
 import glob
 from datetime import datetime
+import paho.mqtt.client as mqtt
+import json
+import threading
+import time
 
 st.set_page_config(layout="wide")
 st.title("IoT Anomaly Monitoring Dashboard")
@@ -16,11 +20,45 @@ if not subsystems:
     st.warning("No data files found. Waiting for data...")
     st.stop()
 
-selected_subsystem = st.sidebar.selectbox("Select Subsystem", sorted(subsystems))
+selected_subsystem = st.sidebar.selectbox("Select Subsystem", sorted(subsystems, key=str.lower), format_func=lambda x: x.capitalize())
 
 # Filter files for selected subsystem
 subsystem_files = [f for f in csv_files if f.startswith(f"{selected_subsystem}_latest_")]
-st.markdown(f"### Subsystem: `{selected_subsystem}`")
+st.markdown(f"### Subsystem: `{selected_subsystem.capitalize()}`")
+
+live_data = {}
+
+def parse_mqtt_payload(payload):
+    try:
+        data = json.loads(payload)
+        index = next(iter(data["Timestamp"]))
+        timestamp = pd.to_datetime(data["Timestamp"][index], unit="ms")
+
+        parsed_rows = []
+        for key in data:
+            if key == "Timestamp":
+                continue
+            sensor_prefix = "_".join(key.split("_")[1:-1])
+            if sensor_prefix not in live_data:
+                live_data[sensor_prefix] = []
+
+            row = {
+                "Timestamp": timestamp,
+                "TimeOnly": timestamp.strftime("%H:%M:%S"),
+            }
+
+            for suffix in ["SetPoint", "Actual", "Error", "Anomaly"]:
+                column = f"{suffix}_{sensor_prefix}_CSP"
+                if column in data:
+                    row[suffix] = data[column][index]
+
+            live_data[sensor_prefix].append(row)
+            parsed_rows.append((sensor_prefix, row))
+
+        return parsed_rows
+    except Exception as e:
+        print(f"Failed to parse MQTT payload: {e}")
+        return []
 
 # Display charts for each sensor in the selected subsystem
 for file in sorted(subsystem_files):
@@ -30,7 +68,9 @@ for file in sorted(subsystem_files):
         st.error(f"Failed to read {file}: {e}")
         continue
 
-    sensor_id = os.path.basename(file).split("_latest_")[1].replace(".csv", "")
+    sensor_id = os.path.basename(file).split("_latest_")[1].replace(".csv", "").removesuffix("_CSP")
+    sensor_prefix = sensor_id
+
     sp_col = next((col for col in df.columns if col.startswith("SetPoint_")), None)
     pv_col = next((col for col in df.columns if col.startswith("Actual_")), None)
     anom_col = next((col for col in df.columns if col.startswith("Anomaly_")), None)
@@ -44,6 +84,10 @@ for file in sorted(subsystem_files):
     )
 
     chart_df["TimeOnly"] = chart_df["Timestamp"].dt.strftime("%H:%M:%S")
+
+    if sensor_prefix in live_data:
+        live_df = pd.DataFrame(live_data[sensor_prefix])
+        chart_df = pd.concat([chart_df, live_df], ignore_index=True).drop_duplicates(subset=["Timestamp"]).sort_values("Timestamp")
 
     min_val = chart_df[["Actual", "SetPoint"]].min().min()
     max_val = chart_df[["Actual", "SetPoint"]].max().max()
@@ -73,6 +117,27 @@ for file in sorted(subsystem_files):
     st.markdown(f"### Sensor: `{sensor_id}`")
     st.altair_chart(lines + anomalies + points_actual + points_setpoint, use_container_width=True)
     st.dataframe(chart_df.tail(5), use_container_width=True)
+
+def on_connect(client, userdata, flags, rc):
+    print("Connected to MQTT broker with result code " + str(rc))
+    client.subscribe("anomalies/#")
+
+def on_message(client, userdata, msg):
+    topic = msg.topic.split("/")[-1]
+    print(f"MQTT message received on topic {msg.topic}")
+    new_rows = parse_mqtt_payload(msg.payload.decode())
+    for sensor_prefix, row in new_rows:
+        print(f"Received data for {sensor_prefix}: {row}")
+
+mqtt_client = mqtt.Client()
+mqtt_client.on_connect = on_connect
+mqtt_client.on_message = on_message
+mqtt_client.connect("localhost", 1883, 60)
+
+def mqtt_thread():
+    mqtt_client.loop_forever()
+
+threading.Thread(target=mqtt_thread, daemon=True).start()
 
 st.markdown("---")
 st.caption("Dashboard auto-refreshes with MQTT every 5 minutes via separate push")
