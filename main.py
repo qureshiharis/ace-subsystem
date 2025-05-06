@@ -46,7 +46,7 @@ def publish_anomaly_row(row):
     else:
         logger.info("Skipping MQTT publish since client is not connected.")
 
-BUFFER_HOURS = int(os.getenv("BUFFER_HOURS", 4))
+BUFFER_HOURS = int(os.getenv("BUFFER_HOURS", 1))
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", "sensor")
 
 
