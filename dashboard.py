@@ -8,16 +8,7 @@ from streamlit_autorefresh import st_autorefresh
 import paho.mqtt.client as mqtt
 
 def process_payload(payload):
-    """
-    Processes the MQTT payload and returns a cleaned dictionary with flat key-value pairs.
-    Supports payloads where values are nested dictionaries with numeric string keys.
-    Example output:
-    {
-        'Timestamp': 1746542991230,
-        'SetPoint_1473_04_AS01_VS01_GT101_CSP': 36.2,
-        ...
-    }
-    """
+
     processed = {}
     for key, value in payload.items():
         if isinstance(value, dict):
@@ -79,8 +70,8 @@ if "mqtt_client" not in st.session_state:
     def on_connect(client, userdata, flags, rc):
         if rc == 0:
             print("Connected to MQTT broker.")
-            # Subscribe to both topics upon connecting
-            client.subscribe([("anomalies/heating", 0), ("anomalies/ventilation", 0)])
+            # Subscribe to all anomaly topics
+            client.subscribe("anomalies/#")
         else:
             print(f"Failed to connect, return code {rc}")
 
@@ -111,8 +102,7 @@ if "mqtt_client" not in st.session_state:
 
     st.session_state["mqtt_client"] = client
     st.session_state["message_queue"] = message_queue
-    st.session_state.setdefault("heating_data", [])
-    st.session_state.setdefault("ventilation_data", [])
+    # Will be dynamically initialized when a topic is first received
 
 # Sidebar for subsystem selection
 subsystem = st.sidebar.selectbox("Select Subsystem", ["heating", "ventilation"], format_func=str.title)
@@ -136,7 +126,7 @@ with data_lock:
     message_queue = st.session_state.get("message_queue", [])
     while message_queue:
         topic, data = message_queue.pop(0)
-        subsystem_msg = "heating" if topic.endswith("/heating") else "ventilation"
+        subsystem_msg = topic.split("/")[-1]  # Dynamically extract subsystem name
         timestamp_raw = data.get("Timestamp", "")
         # Ensure timestamp is numeric (milliseconds since epoch)
         timestamp = int(timestamp_raw) if isinstance(timestamp_raw, (int, float, str)) and str(timestamp_raw).isdigit() else int(pd.Timestamp.now().timestamp() * 1000)
@@ -186,7 +176,10 @@ with data_lock:
         if not new_entries:
             continue  # no sensor data parsed
 
-        target_data = st.session_state["heating_data"] if subsystem_msg == "heating" else st.session_state["ventilation_data"]
+        if subsystem_msg + "_data" not in st.session_state:
+            st.session_state[subsystem_msg + "_data"] = []
+
+        target_data = st.session_state[subsystem_msg + "_data"]
         csv_path = f"{subsystem_msg}.csv"
         file_exists = os.path.isfile(csv_path)
 
@@ -209,7 +202,7 @@ with data_lock:
 
 # Safely copy current data under lock for the selected subsystem
 with data_lock:
-    data_list = list(st.session_state["heating_data"] if subsystem == "heating" else st.session_state["ventilation_data"])
+    data_list = list(st.session_state.get(subsystem + "_data", []))
 
 # If no data is available yet, inform the user
 if not data_list:
