@@ -21,16 +21,34 @@ MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.1.219")  # Replace with local IP
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_TOPIC = os.getenv("MQTT_TOPIC", "anomalies")
 
-# Set up MQTT client
-mqtt_client = mqtt.Client()
+
+# MQTT connection status
 mqtt_connected = False
-logger.info(f"MQTT_BROKER, MQTT_PORT: {MQTT_BROKER} {MQTT_PORT}")
-try:
-    mqtt_client.connect(MQTT_BROKER, MQTT_PORT)
-    mqtt_client.loop_start()
-    mqtt_connected = True
-except Exception as e:
-    logger.warning(f"MQTT connection failed: {e}")
+
+def on_connect(client, userdata, flags, rc):
+    global mqtt_connected
+    if rc == 0:
+        mqtt_connected = True
+        logger.info("Connected to MQTT Broker.")
+    else:
+        logger.warning(f"Failed to connect to MQTT Broker. Return code: {rc}")
+
+def on_disconnect(client, userdata, rc):
+    global mqtt_connected
+    mqtt_connected = False
+    logger.warning("Disconnected from MQTT Broker.")
+
+def setup_mqtt_client():
+    client = mqtt.Client()
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    logger.info(f"MQTT_BROKER, MQTT_PORT: {MQTT_BROKER} {MQTT_PORT}")
+    try:
+        client.connect(MQTT_BROKER, MQTT_PORT)
+        client.loop_start()
+    except Exception as e:
+        logger.warning(f"MQTT connection failed: {e}")
+    return client
 
 def publish_anomaly_row(row):
     import json
@@ -47,7 +65,14 @@ OUTPUT_FILE = os.getenv("OUTPUT_FILE", "sensor")
 
 
 def main():
+    global mqtt_client
+    mqtt_client = setup_mqtt_client()
     while True:
+        if not mqtt_connected:
+            logger.warning("MQTT not connected. Attempting to reconnect...")
+            mqtt_client = setup_mqtt_client()
+            time.sleep(2)  # small delay before retrying loop
+
         logger.info("Fetching and processing data...")
 
         cutoff_time = pd.Timestamp.now(tz="Europe/Stockholm") - timedelta(hours=BUFFER_HOURS)

@@ -23,7 +23,6 @@ def fetch_sensor_data(tag_name, api_key, window_minutes=60):
     logger.info(f"Fetching data for tag '{tag_name}' from {formatted_start} to {formatted_end}")
 
     url = f"{BASE_URL}/v1/trend/history?tag={tag_name}&start={formatted_start}&end={formatted_end}"
-    logger.info(f"Full API call: {url}")
     headers = {
         "accept": "application/json",
         "token": api_key
