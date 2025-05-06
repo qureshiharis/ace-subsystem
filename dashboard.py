@@ -86,7 +86,9 @@ if "mqtt_client" not in st.session_state:
         """Handle incoming MQTT messages for anomalies."""
         try:
             payload = json.loads(msg.payload.decode())
+            print(f"[MQTT] Received message on {msg.topic}: {payload}")
             processed_payload = process_payload(payload)
+            print(f"[MQTT] Processed payload: {processed_payload}")
             message_queue.append((msg.topic, processed_payload))
         except Exception as e:
             print(f"Failed to decode or process message: {e}")
@@ -165,21 +167,25 @@ with data_lock:
                             sensor_entry["Error"] = float(value) if value is not None else None
                         elif prefix == "Anomaly":
                             sensor_entry["Anomaly"] = bool(value) if isinstance(value, bool) else str(value).lower() == "true"
+        print(f"[PARSE] Sensor entries parsed: {sensor_data_map}")
 
         new_entries = list(sensor_data_map.values())
         if not new_entries:
             continue  # no sensor data parsed
 
-        # Removed timestamp duplication check to allow all messages through
         target_data = st.session_state["heating_data"] if subsystem_msg == "heating" else st.session_state["ventilation_data"]
-        target_data.extend(new_entries)
         csv_path = f"{subsystem_msg}.csv"
         file_exists = os.path.isfile(csv_path)
-        try:
-            new_df = pd.DataFrame(new_entries)
-            new_df.to_csv(csv_path, mode='a', header=not file_exists, index=False)
-        except Exception as e:
-            print(f"Error writing to {csv_path}: {e}")
+
+        for entry in new_entries:
+            print(f"[WRITE] Writing entry to {csv_path}: {entry}")
+            target_data.append(entry)
+            print(f"[SESSION] Appended entry to {subsystem_msg}_data: {entry}")
+            try:
+                pd.DataFrame([entry]).to_csv(csv_path, mode='a', header=not file_exists, index=False)
+                file_exists = True  # header written only once
+            except Exception as e:
+                print(f"Error writing entry to {csv_path}: {e}")
 
 # Safely copy current data under lock for the selected subsystem
 with data_lock:
