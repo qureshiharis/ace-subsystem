@@ -184,38 +184,34 @@ else:
     # Identify unique sensor IDs in the data
     sensors = sorted(df["Sensor"].unique())
 
-    # Set up two columns for two sensor charts
-    col1, col2 = st.columns(2)
-    for idx, sensor_id in enumerate(sensors):
+    for sensor_id in sensors:
         sensor_df = df[df["Sensor"] == sensor_id]
+        sensor_df = sensor_df.sort_values("Timestamp").tail(10)
+        # Compute tight y-axis domain based on Actual and SetPoint
+        y_values = pd.concat([sensor_df["Actual"], sensor_df["SetPoint"]]).dropna()
+        y_min = y_values.min() - 2
+        y_max = y_values.max() + 2
+        y_scale = alt.Scale(domain=[y_min, y_max])
         # Build Altair chart for this sensor
         base = alt.Chart(sensor_df).encode(
-            x=alt.X("Timestamp:T", title="Time")
-        )
-        # Line for Actual (process value)
+            x=alt.X("Timestamp:T", title="Time", axis=alt.Axis(format="%H:%M:%S")),
+        ).properties(
+            width=800
+        ).interactive(bind_y=False)
         actual_line = base.mark_line(strokeDash=[5, 5], color="steelblue").encode(
-            y=alt.Y("Actual:Q", title="Value"),
+            y=alt.Y("Actual:Q", title="Value", scale=y_scale),
             tooltip=["Timestamp:T", "Actual:Q", "Error:Q", "Anomaly:O"]
         )
-        # Line for SetPoint
         setpoint_line = base.mark_line(color="green").encode(
-            y="SetPoint:Q",
+            y=alt.Y("SetPoint:Q", scale=y_scale),
             tooltip=["Timestamp:T", "SetPoint:Q"]
         )
-        # Red points for anomalies (where Anomaly is True)
         anomaly_points = base.transform_filter(
             alt.datum.Anomaly == True
         ).mark_point(color="red", size=75).encode(
             y="Actual:Q",
             tooltip=["Timestamp:T", "Actual:Q", "Error:Q"]
         )
-        chart = (actual_line + setpoint_line + anomaly_points).interactive()
-        # Display chart with a title for the sensor
-        if idx == 0:
-            with col1:
-                st.markdown(f"**Sensor {sensor_id}**")
-                st.altair_chart(chart, use_container_width=True)
-        elif idx == 1:
-            with col2:
-                st.markdown(f"**Sensor {sensor_id}**")
-                st.altair_chart(chart, use_container_width=True)
+        chart = alt.layer(actual_line, setpoint_line, anomaly_points)
+        st.markdown(f"**Sensor {sensor_id}**")
+        st.altair_chart(chart, use_container_width=True)
