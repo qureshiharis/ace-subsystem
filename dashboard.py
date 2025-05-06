@@ -205,31 +205,46 @@ else:
     for sensor_id in sensors:
         sensor_df = df[df["Sensor"] == sensor_id]
         sensor_df = sensor_df.sort_values("Timestamp").tail(10)
+        latest_row = sensor_df.iloc[-1] if not sensor_df.empty else None
+        if latest_row is not None:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Latest SetPoint", f"{latest_row['SetPoint']:.2f}")
+            with col2:
+                st.metric("Latest Actual", f"{latest_row['Actual']:.2f}")
+            with col3:
+                st.metric("Anomaly Detected", "Yes" if latest_row["Anomaly"] else "No")
         # Compute tight y-axis domain based on Actual and SetPoint
         y_values = pd.concat([sensor_df["Actual"], sensor_df["SetPoint"]]).dropna()
         y_min = y_values.min() - 2
         y_max = y_values.max() + 2
         y_scale = alt.Scale(domain=[y_min, y_max])
-        # Build Altair chart for this sensor
-        base = alt.Chart(sensor_df).encode(
+        # Melt sensor_df for unified chart legend and encoding
+        sensor_df_melted = sensor_df.melt(
+            id_vars=["Timestamp", "Sensor", "Error", "Anomaly"],
+            value_vars=["Actual", "SetPoint"],
+            var_name="Type",
+            value_name="Value"
+        )
+        base = alt.Chart(sensor_df_melted).encode(
             x=alt.X("Timestamp:T", title="Time", axis=alt.Axis(format="%H:%M:%S")),
+            y=alt.Y("Value:Q", title="Value", scale=y_scale),
+            color=alt.Color("Type:N", title="Measurement"),
+            strokeDash=alt.StrokeDash("Type:N", title="Measurement")
         ).properties(
             width=800
         ).interactive(bind_y=False)
-        actual_line = base.mark_line(strokeDash=[5, 5], color="steelblue").encode(
-            y=alt.Y("Actual:Q", title="Value", scale=y_scale),
-            tooltip=["Timestamp:T", "Actual:Q", "Error:Q", "Anomaly:O"]
+
+        line_chart = base.mark_line().encode(
+            tooltip=["Timestamp:T", "Value:Q", "Type:N", "Error:Q", "Anomaly:O"]
         )
-        setpoint_line = base.mark_line(color="green").encode(
-            y=alt.Y("SetPoint:Q", scale=y_scale),
-            tooltip=["Timestamp:T", "SetPoint:Q"]
-        )
+
         anomaly_points = base.transform_filter(
             alt.datum.Anomaly == True
         ).mark_point(color="red", size=75).encode(
-            y="Actual:Q",
-            tooltip=["Timestamp:T", "Actual:Q", "Error:Q"]
+            tooltip=["Timestamp:T", "Value:Q", "Error:Q"]
         )
-        chart = alt.layer(actual_line, setpoint_line, anomaly_points)
+
+        chart = alt.layer(line_chart, anomaly_points)
         st.markdown(f"### 📡 Sensor: `{sensor_id}`")
         st.altair_chart(chart, use_container_width=True)
