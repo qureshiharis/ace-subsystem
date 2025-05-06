@@ -199,7 +199,7 @@ else:
     df = pd.DataFrame(data_list)
     # Ensure Timestamp is datetime for proper plotting
     try:
-        df["Timestamp"] = pd.to_datetime(pd.to_numeric(df["Timestamp"], errors="coerce"), unit="ms")
+        df["Timestamp"] = pd.to_datetime(pd.to_numeric(df["Timestamp"], errors="coerce"), unit="ms").dt.tz_localize("UTC").dt.tz_convert("Europe/Stockholm")
     except Exception:
         # If parsing fails (non-standard format), keep as string
         pass
