@@ -245,12 +245,16 @@ else:
             tooltip=["Timestamp:T", "Value:Q", "Type:N", "Error:Q", "Anomaly:O"]
         )
 
+        points = base.mark_point(size=40).encode(
+            tooltip=["Timestamp:T", "Value:Q", "Type:N", "Error:Q", "Anomaly:O"]
+        )
+
         anomaly_points = base.transform_filter(
             alt.datum.Anomaly == True
         ).mark_point(color="red", size=75).encode(
             tooltip=["Timestamp:T", "Value:Q", "Error:Q"]
         )
 
-        chart = alt.layer(line_chart, anomaly_points)
+        chart = alt.layer(line_chart, points, anomaly_points)
         st.markdown(f"### 📡 Sensor: `{sensor_id}`")
         st.altair_chart(chart, use_container_width=True)
