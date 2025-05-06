@@ -91,13 +91,14 @@ def main():
                 df_existing.drop_duplicates(subset=["Timestamp"], keep="last", inplace=True)
                 df_existing = df_existing[df_existing["Timestamp"] >= cutoff_time]
                 logger.info(f"Filtered to {len(df_existing)} rows after applying {BUFFER_HOURS}h window and deduplication")
-                df_existing.sort_values("Timestamp", inplace=True)
+                df_existing = df_existing.sort_values("Timestamp")
+                latest_row = df_existing[df_existing["Timestamp"] == df_existing["Timestamp"].max()]
                 df_existing.to_csv(output_file, index=False)
                 logger.info(f"Saving filtered data from {df_existing['Timestamp'].min()} to {df_existing['Timestamp'].max()}")
                 logger.info(f"Data saved to {output_file} with {len(df_existing)} rows")
 
                 if not df_existing.empty:
-                    publish_anomaly_row(df_existing.iloc[[-1]])
+                    publish_anomaly_row(latest_row)
 
                 if anomaly_flags:
                     logger.warning(f"Anomaly detected for {sp_tag} — triggering alert")
