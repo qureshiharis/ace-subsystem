@@ -42,6 +42,13 @@ MQTT_KEEPALIVE = 60
 # Set Streamlit page layout and title
 st.set_page_config(page_title="Anomaly Dashboard", layout="wide")
 
+st.title("Real-Time Anomaly Detection Dashboard")
+st.markdown("""
+Welcome to the **ACE Subsystem Monitoring Dashboard**.  
+Here you can track sensor activity in real time for the **heating** and **ventilation** subsystems.  
+Use the sidebar to switch between subsystems.
+""")
+
 # Initialize session state for MQTT and data (run only on first load)
 if "mqtt_client" not in st.session_state:
     # Load existing CSV data if available (to avoid duplicating historical data)
@@ -103,6 +110,17 @@ if "mqtt_client" not in st.session_state:
 
 # Sidebar for subsystem selection
 subsystem = st.sidebar.selectbox("Select Subsystem", ["heating", "ventilation"], format_func=str.title)
+
+st.sidebar.markdown("---")
+st.sidebar.info("""
+This dashboard displays live data from MQTT topics.
+
+- **Heating & Ventilation**
+- SetPoint vs Actual
+- Anomaly markers
+
+Developed for thesis monitoring in real-time.
+""")
 
 # Trigger automatic rerun every few seconds to fetch new data (avoids manual refresh or infinite loops)
 st_autorefresh(interval=2000, key="auto_refresh")  # refresh every 2 seconds
@@ -213,5 +231,5 @@ else:
             tooltip=["Timestamp:T", "Actual:Q", "Error:Q"]
         )
         chart = alt.layer(actual_line, setpoint_line, anomaly_points)
-        st.markdown(f"**Sensor {sensor_id}**")
+        st.markdown(f"### 📡 Sensor: `{sensor_id}`")
         st.altair_chart(chart, use_container_width=True)
