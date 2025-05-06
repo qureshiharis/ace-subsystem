@@ -1,27 +1,30 @@
-# fetcher.py
 import requests
 import urllib.parse
 import pandas as pd
 from datetime import datetime, timedelta
 import logging
+import pytz  # for timezone awareness
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-FIXED_OFFSET = "+02:00"
 BASE_URL = 'https://webport.it.pitea.se/api'
 
 def fetch_sensor_data(tag_name, api_key, window_minutes=60):
-    end_time = datetime.now()
+    # Use Stockholm local time
+    local_tz = pytz.timezone("Europe/Stockholm")
+    end_time = datetime.now(local_tz)
     start_time = end_time - timedelta(minutes=window_minutes)
 
-    formatted_start = urllib.parse.quote(start_time.strftime("%Y-%m-%dT%H:%M:%S") + FIXED_OFFSET)
-    formatted_end = urllib.parse.quote(end_time.strftime("%Y-%m-%dT%H:%M:%S") + FIXED_OFFSET)
+    # Format with proper timezone-aware ISO format
+    formatted_start = urllib.parse.quote(start_time.replace(microsecond=0).isoformat())
+    formatted_end = urllib.parse.quote(end_time.replace(microsecond=0).isoformat())
+
 
     logger.info(f"Fetching data for tag '{tag_name}' from {formatted_start} to {formatted_end}")
 
     url = f"{BASE_URL}/v1/trend/history?tag={tag_name}&start={formatted_start}&end={formatted_end}"
-
+    logger.info(f"Full API call: {url}")
     headers = {
         "accept": "application/json",
         "token": api_key

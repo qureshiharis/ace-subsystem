@@ -2,6 +2,8 @@ import os
 import time
 import pandas as pd
 from datetime import datetime, timedelta
+import pytz
+from datetime import timezone
 
 from config import TAG_PAIRS, FETCH_INTERVAL, API_KEY
 from fetcher import fetch_sensor_data
@@ -13,12 +15,20 @@ import paho.mqtt.client as mqtt
 
 import logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+class StockholmFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        stockholm = pytz.timezone("Europe/Stockholm")
+        dt = datetime.fromtimestamp(record.created, tz=timezone.utc).astimezone(stockholm)
+        return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
+
+handler = logging.StreamHandler()
+formatter = StockholmFormatter(fmt="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+handler.setFormatter(formatter)
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+logger.propagate = False
 
 # MQTT config
 MQTT_BROKER = os.getenv("MQTT_BROKER", "192.168.1.219")  # Replace with local IP running the dashboard
