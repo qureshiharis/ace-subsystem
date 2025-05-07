@@ -59,6 +59,10 @@ if "mqtt_client" not in st.session_state:
                         st.session_state.setdefault("heating_data", []).extend(df_old.to_dict(orient="records"))
                     else:
                         st.session_state.setdefault("ventilation_data", []).extend(df_old.to_dict(orient="records"))
+                    df_old_anomalies = df_old[df_old.get("Anomaly", False) == True]
+                    if not df_old_anomalies.empty:
+                        anomaly_list = df_old_anomalies.to_dict(orient="records")
+                        st.session_state.setdefault(f"{subsystem}_anomalies", []).extend(anomaly_list)
             except Exception as e:
                 st.warning(f"Warning: Could not load {csv_file} ({e}). Starting fresh.")
                 # If file is corrupted or unreadable, start with empty data
@@ -69,7 +73,6 @@ if "mqtt_client" not in st.session_state:
     # Define MQTT callbacks
     def on_connect(client, userdata, flags, rc):
         if rc == 0:
-            print("Connected to MQTT broker.")
             # Subscribe to all anomaly topics
             client.subscribe("anomalies/#")
         else:
@@ -271,3 +274,17 @@ else:
         chart = alt.layer(line_chart, points, anomaly_points)
         st.markdown(f"### 📡 Sensor: `{sensor_id}`")
         st.altair_chart(chart, use_container_width=True)
+
+    st.markdown("## 🔍 Historical Anomalies")
+    anomaly_key = f"{subsystem}_anomalies"
+    historical_anomalies = st.session_state.get(anomaly_key, [])
+    if historical_anomalies:
+        df_anomaly = pd.DataFrame(historical_anomalies)
+        df_anomaly = df_anomaly.sort_values("Timestamp", ascending=False)
+        try:
+            df_anomaly["Timestamp"] = pd.to_datetime(pd.to_numeric(df_anomaly["Timestamp"], errors="coerce"), unit="ms").dt.tz_localize("UTC").dt.tz_convert("Europe/Stockholm")
+        except Exception:
+            pass
+        st.dataframe(df_anomaly[["Timestamp", "Sensor", "SetPoint", "Actual", "Error"]].head(20), use_container_width=True)
+    else:
+        st.write("No historical anomalies recorded yet.")
